@@ -13,7 +13,22 @@ type AuxData = [AccountId32[], U32];
 
 export function useBlockAuthor (header: HeaderExtended | undefined) {
   const [author, setAuthor] = useState<AccountId32 | undefined>(undefined);
+  const [auxData, setAuxData] = useState<AuxData | undefined>();
   const { api } = useApi();
+
+  useEffect(() => {
+    const loadAuxData = async () => {
+      try {
+        const data = await api.call.spinApi.auxData();
+
+        setAuxData(data as unknown as AuxData);
+      } catch (e) {
+        console.error('Failed to load auxData:', e);
+      }
+    };
+
+    loadAuxData().catch(console.error);
+  }, [api.call.spinApi]);
 
   const slot = header?.digest.logs.map((log) => {
     if (log.isPreRuntime) {
@@ -22,24 +37,40 @@ export function useBlockAuthor (header: HeaderExtended | undefined) {
       return api.createType('U64', data.toU8a());
     }
 
-    return null;
+    return undefined;
   }).filter(Boolean);
 
-  const extractAuthor = async (): Promise<AccountId32> => {
-    const [authorities, sessionLength]: AuxData = await api.call.spinApi.auxData();
-    const sessionIdx = Math.floor(slot?.[0] as any / sessionLength.toNumber());
-    const authorIdx = sessionIdx % authorities.length;
+  const extractAuthor = useCallback(async (): Promise<AccountId32 | undefined> => {
+    if (!auxData) {
+      return undefined;
+    }
 
-    return authorities[authorIdx];
-  };
+    const [authorities, sessionLength] = auxData;
 
-  const extractAuthorCb = useCallback(extractAuthor, [slot, api.call.spinApi]);
+    const slotValue = slot?.[0];
+
+    if (!slotValue || !authorities.length) {
+      return undefined;
+    }
+
+    const slotNum = Number(slotValue);
+    const sessionLengthNum = sessionLength.toNumber();
+    const SLOT_INCREMENT = 256;
+    const virtualStep = Math.floor(slotNum / (sessionLengthNum * SLOT_INCREMENT));
+    const leaderIdx = virtualStep % authorities.length;
+
+    return authorities[leaderIdx];
+  }, [auxData, slot]);
 
   useEffect(() => {
-    extractAuthorCb()
-      .then((a) => setAuthor(a))
+    extractAuthor()
+      .then((a) => {
+        if (a) {
+          setAuthor(a);
+        }
+      })
       .catch((e) => console.error(e));
-  }, [extractAuthorCb, api.call.spinApi]);
+  }, [extractAuthor]);
 
   return author;
 }
